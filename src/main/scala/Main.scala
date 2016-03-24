@@ -1,4 +1,5 @@
 object Main {
+
   import scala.collection.Map
   import java.io.File
 
@@ -11,18 +12,23 @@ object Main {
   }
 
   sealed trait ValueAggregate {
+    type T <: ValueAggregate
+
     val count: Int
 
     def formatPretty(offset: Int = 0) = this.toString
+
+    def merge(other: T): T
   }
 
   object ValueAggregate {
-    def makeAggregate[A](value: A): Either[String, ValueAggregate] = {
+    def makeAggregate(value: Any): Either[String, ValueAggregate] = {
+      // TODO: numberaggregate. does my current parser even return num values?
       value match {
-        case null         => Right(NullAggregate(1))
-        case s: String    => Right(StringAggregate(s.length, s.length, s.length, 1))
-        case b: Boolean   => Right(BooleanAggregate.fromBoolean(b))
-        case l: List[Any] => Right(ArrayAggregate(l.length, l.length, l.length, 1))
+        case null => Right(NullAggregate.make)
+        case b: Boolean => Right(BooleanAggregate.fromBoolean(b))
+        case s: String => Right(StringAggregate.fromString(s))
+        case l: List[Any]        => ArrayAggregate.fromList(l)
         case m: Map[String, Any] => JsonObjectAggregate.fromMap(m)
 
         case x => Left(x.getClass.toString) // TODO: these arent getting printed with error prefixes (but are being pretty printed)
@@ -31,6 +37,8 @@ object Main {
   }
 
   case class JsonObjectAggregate(attributes: Map[String, Either[String, ValueAggregate]], count: Int = 1) extends ValueAggregate {
+    type T = JsonObjectAggregate
+
     override def formatPretty(offset: Int = 0): String =
       this.attributes.mapValues({
         case Right(v) =>  v match {
@@ -39,6 +47,9 @@ object Main {
         }
         case Left(err) => err
       }).mkString("\n" + (" " * offset))
+
+    def merge(other: JsonObjectAggregate): JsonObjectAggregate =
+      this // TODO
   }
 
   object JsonObjectAggregate {
@@ -56,11 +67,37 @@ object Main {
     }
   }
 
-  case class StringAggregate(minLen: Int, maxLen: Int, avgLen: Int, count: Int) extends ValueAggregate
-  case class NumberAggregate(min: Int, max: Int, avg: Int, count: Int) extends ValueAggregate
-  case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int) extends ValueAggregate
-  case class ArrayAggregate(minLen: Int, maxLen: Int, avgLen: Int, count: Int) extends ValueAggregate
-  case class NullAggregate(count: Int) extends ValueAggregate
+  case class ArrayAggregate(values: Set[Either[String, ValueAggregate]], minLen: Int, maxLen: Int, avgLen: Int, count: Int) extends ValueAggregate {
+    type T = ArrayAggregate
+
+    def merge(other: ArrayAggregate): ArrayAggregate = this
+  }
+
+  object ArrayAggregate {
+    // TODO: first solid merging should be done here
+    def fromList(l: List[Any]): Either[String, ValueAggregate] =
+      Right(ArrayAggregate(Set(), l.length, l.length, l.length, 1))
+  }
+
+  case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen: Int, count: Int) extends ValueAggregate {
+    type T = StringAggregate
+
+    override def formatPretty(offset: Int): String =
+      "StringAggregate{ " + values.map("\"" + _ + "\"").mkString(", ") + " }"
+
+    def merge(other: StringAggregate): StringAggregate = this // TODO
+  }
+
+  object StringAggregate {
+    def fromString(s: String): StringAggregate =
+      StringAggregate(Set(s), s.length, s.length, s.length, 1)
+  }
+
+  case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int) extends ValueAggregate {
+    type T = BooleanAggregate
+
+    def merge(other: BooleanAggregate): BooleanAggregate = this // TODO
+  }
 
   object BooleanAggregate {
     def fromBoolean(b: Boolean) = b match {
@@ -69,36 +106,36 @@ object Main {
     }
   }
 
+  case class NullAggregate(count: Int) extends ValueAggregate {
+    type T = NullAggregate
+
+    def merge(other: NullAggregate): NullAggregate = this // TODO
+  }
+
+  object NullAggregate {
+    def make: ValueAggregate = NullAggregate(1)
+  }
+
   def parseJson(body: String): Option[Any] = {
     import scala.util.parsing.json._
 
     JSON.parseFull(body)
   }
 
-  def analyzeJsonArray(arr: List[Any]): String =
-    "array parsing not yet implemented"
 
-  def analyzeJsonObjects(objects: List[Map[String, Any]]): Either[String, JsonObjectAggregate] = {
-    objects
-      .map(JsonObjectAggregate.fromMap(_))
-      .reduce(JsonObjectAggregate.mergeAggregates)
-  }
-
-  def analyzeJson(json: Option[Any]): Either[String, List[JsonObjectAggregate]] =
+  // TODO: should i limit these to just root json objects, aka jsonagg and array agg?
+  def analyzeJson(json: Option[Any]): Either[String, ValueAggregate] =
     json match {
       case Some(x) => x match {
-        case l: List[Any] => Left(analyzeJsonArray(l))
-        case m: Map[String, Any] => JsonObjectAggregate.fromMap(m) match {
-          case Right(x) => Right(List(x))
-          case Left(y) => Left(y)
-        }
+        case l: List[Any] => ArrayAggregate.fromList(l)
+        case m: Map[String, Any] => JsonObjectAggregate.fromMap(m)
       }
       case None => Left("parser returned none")
     }
 
-  def formatAnalysis(analysis: Either[String, List[JsonObjectAggregate]]) = {
+  def formatAnalysis(analysis: Either[String, ValueAggregate]) = {
     analysis match {
-      case Right(l) => l.map(_.formatPretty()).mkString("\n ---- \n")
+      case Right(agg) => agg.formatPretty()
       case Left(err) => "Error: " + err
     }
   }
@@ -124,7 +161,6 @@ object Main {
     // analyze parsed json
     val analysis = analyzeJson(parsed)
     val prettyA = formatAnalysis(analysis)
-
     println(prettyA)
   }
 }
