@@ -12,13 +12,10 @@ object Main {
   }
 
   // TODO: should i limit these to just root json objects, aka jsonagg and array agg?
-  def analyzeJson(json: Option[Any]): Either[String, ValueAggregate] =
+  def analyzeJson(json: Option[Any]): ValueAggregate =
     json match {
-      case Some(x) => x match {
-        case l: List[Any] => ArrayAggregate.fromList(l)
-        case m: Map[String, Any] => JsonObjectAggregate.fromMap(m)
-      }
-      case None => Left("parser returned none")
+      case Some(x) => ValueAggregate.makeAggregate(x)
+      case None => throw new Error("parser returned none")
     }
 
   def parseJson(body: String): Option[Any] = {
@@ -27,11 +24,8 @@ object Main {
     JSON.parseFull(body)
   }
 
-  def formatAnalysis(analysis: Either[String, ValueAggregate]) = {
-    analysis match {
-      case Right(agg) => agg.formatPretty()
-      case Left(err) => "Error: " + err
-    }
+  def formatAnalysis(analysis: ValueAggregate) = {
+      analysis.formatPretty()
   }
 
   def main(args: Array[String]) = {
