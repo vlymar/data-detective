@@ -28,6 +28,13 @@ object Main {
       analysis.formatPretty()
   }
 
+  def filesToStrings(files: List[File]): List[String] = {
+    files.map { (f) =>
+      val source = io.Source.fromFile(f)
+      try source.mkString finally source.close
+    }
+  }
+
   def main(args: Array[String]) = {
     println("input:")
     println(args.mkString("; ") + "\n") // /Users/victor/code/little-brother/114th_bulk_data/bills
@@ -36,19 +43,16 @@ object Main {
     val files = getListOfFiles(dir)
     println(s"found ${files.length} files\n")
 
-    val f = files(0)
-    println(s"first file: ${f}\n")
+    val someFiles: List[File] = files.take(8000)
+    //println(someFiles.mkString("\n"))
 
-    // read file body into string
-    val source = io.Source.fromFile(f)
-    val body = try source.mkString finally source.close
 
-    // parse file body json
-    val parsed = parseJson(body)
+    val tStrings: List[String] = filesToStrings(someFiles)
+    val tParsed: List[Option[Any]] = tStrings.map { parseJson(_) }
 
-    // analyze parsed json
-    val analysis = analyzeJson(parsed)
-    val prettyA = formatAnalysis(analysis)
+    val analyzed = tParsed.map(analyzeJson _).reduce(_ aggregate _)
+
+    val prettyA = formatAnalysis(analyzed)
     println(prettyA)
   }
 }
