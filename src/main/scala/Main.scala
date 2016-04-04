@@ -1,5 +1,8 @@
 object Main {
 
+  import org.json4s._
+  import org.json4s.JsonDSL._
+  import org.json4s.jackson.JsonMethods._
   import scala.collection.Map
   import java.io.File
 
@@ -12,48 +15,52 @@ object Main {
   }
 
   // TODO: should i limit these to just root json objects, aka jsonagg and array agg?
-  def analyzeJson(json: Option[Any]): ValueAggregate =
-    json match {
-      case Some(x) => ValueAggregate.makeAggregate(x)
-      case None => throw new Error("parser returned none")
+  def analyzeJson(json: JValue): ValueAggregate =
+    ValueAggregate.makeAggregate(json)
+
+  def filesToStrings(files: List[File]): Stream[String] = {
+    files match {
+      case f :: fs => fileToString(f) #:: filesToStrings(fs)
+      case Nil => Stream.empty
     }
-
-  def parseJson(body: String): Option[Any] = {
-    import scala.util.parsing.json._
-
-    JSON.parseFull(body)
   }
 
-  def formatAnalysis(analysis: ValueAggregate) = {
-      analysis.formatPretty()
-  }
-
-  def filesToStrings(files: List[File]): List[String] = {
-    files.map { (f) =>
-      val source = io.Source.fromFile(f)
-      try source.mkString finally source.close
-    }
+  def fileToString(file: File): String = {
+    val source = io.Source.fromFile(file)
+    try source.mkString finally source.close
   }
 
   def main(args: Array[String]) = {
     println("input:")
-    println(args.mkString("; ") + "\n") // /Users/victor/code/little-brother/114th_bulk_data/bills
+    println(args.mkString("; ") + "\n") // /Users/victor/code/little-brother/114th_bulk_data/bills, out.json
 
     val dir = args(0)
-    val files = getListOfFiles(dir)
-    println(s"found ${files.length} files\n")
+    val out = args(1)
+    val limit = args(2).toInt
 
-    val someFiles: List[File] = files.take(8000)
-    //println(someFiles.mkString("\n"))
+    val files: List[File] = getListOfFiles(dir).take(limit)
 
+    val analyzed = filesToStrings(files)
+      .take(limit)
+      .map(parse(_))
+      .map(analyzeJson(_))
+      //.map(identity(_))
+      //.map(identity(_))
+      // .foldLeft(MultiAggregate.empty) { (a, b) =>
+      //   a aggregate analyzeJson(parse(b))
+      // }
+      .foldLeft(MultiAggregate.empty) { (a, b) =>
+        a aggregate b
+      }
+      // .reduceLeft {(a, b) =>
+      //   (a aggregate b)
+      // }
 
-    val tStrings: List[String] = filesToStrings(someFiles)
-    val tParsed: List[Option[Any]] = tStrings.map { parseJson(_) }
-
-    val analyzed = tParsed.map(analyzeJson _).reduce(_ aggregate _)
-
-    val prettyA = formatAnalysis(analyzed)
-    println(prettyA)
+    val prettyA = pretty(render(analyzed.toJson))
+    val file = new File(out)
+    val bw = new java.io.BufferedWriter(new java.io.FileWriter(file))
+    bw.write(prettyA)
+    bw.close()
   }
 }
 

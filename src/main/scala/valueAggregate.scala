@@ -1,14 +1,13 @@
 import scala.collection.immutable.Map
 
+import org.json4s._
+import org.json4s.JsonDSL._
+import org.json4s.jackson.JsonMethods._
 /*
   TODO:
-  !! - combine all json files!
-  !! - add counts / occurrence percentages
-  - NumberAggregate not yet implemented
-  - switch to different json library
-  - find cleaner merge implementation
   - what should MaxEnumSize be?
     - how can I tune it?
+  - NumberAggregate not yet implemented
  */
 
 sealed trait ValueAggregate {
@@ -34,34 +33,27 @@ sealed trait ValueAggregate {
 
   def merge(other: S): S
 
-  def formatPretty(offset: Int = 0) = this.toString
+  def toJson: JObject
 }
 
 object ValueAggregate {
-  def makeAggregate(value: Any): ValueAggregate = {
+  def makeAggregate(value: JValue): ValueAggregate = {
     value match {
-      case null                => NullAggregate.make
-      case b: Boolean          => BooleanAggregate.fromBoolean(b)
-      case s: String           => StringAggregate.fromString(s)
-      case l: List[Any]        => ArrayAggregate.fromList(l)
-      case m: Map[String, Any] => JsonObjectAggregate.fromMap(m)
+      case JNull           => NullAggregate.make
+      case JBool(b)        => BooleanAggregate.fromBoolean(b)
+      case JString(s)      => StringAggregate.fromString(s)
+      case JArray(arr)     => ArrayAggregate.fromList(arr)
+      case JObject(fields) => JsonObjectAggregate.fromMap(fields)
 
-      case x                   => throw new Error(x.getClass.toString)
+      case x          => throw new Error(x.getClass.toString)
     }
   }
 }
-//
+
 case class JsonObjectAggregate(attributes: Map[String, ValueAggregate], count: Int)
   extends ValueAggregate {
 
   type S = JsonObjectAggregate
-
-  override def formatPretty(offset: Int = 0): String =
-    "( " + count + " )" + this.attributes.mapValues({
-      case jOA: JsonObjectAggregate => "\n" + (" " * (offset + 4)) + jOA.formatPretty(offset + 4)
-      case aA: ArrayAggregate => aA.formatPretty(offset + 4)
-      case x => x.formatPretty()
-    }).mkString("\n" + (" " * offset))
 
   def merge(other: JsonObjectAggregate): JsonObjectAggregate = {
     val mergedAttrs = (this.attributes.keySet ++ other.attributes.keySet).map((k) =>
@@ -73,13 +65,24 @@ case class JsonObjectAggregate(attributes: Map[String, ValueAggregate], count: I
     ).toMap
     JsonObjectAggregate(mergedAttrs, this.count + other.count)
   }
+
+  def toJson: JObject = {
+    ("type" -> "json") ~
+      ("statistics" -> ("count" -> count)) ~
+      ("attributes" ->
+        attributes.foldLeft(JObject()) { (acc: JObject, kv: (String, ValueAggregate)) =>
+          val (k, v) = kv
+          acc ~ (k -> v.toJson)
+        })
+  }
 }
 
 object JsonObjectAggregate {
-  def fromMap(jsonMap: Map[String, Any]): JsonObjectAggregate = {
+  // TODO: change name
+  def fromMap(jsonMap: List[(String, JValue)]): JsonObjectAggregate = {
     val m = jsonMap.map {
       case (k, v) => k -> ValueAggregate.makeAggregate(v)
-    }
+    }.toMap
 
     JsonObjectAggregate(m, 1)
   }
@@ -93,21 +96,21 @@ case class ArrayAggregate(values: MultiAggregate, count: Int)
   def merge(other: ArrayAggregate): ArrayAggregate =
     ArrayAggregate(this.values.merge(other.values), this.count + other.count)
 
-  override def formatPretty(offset: Int = 0): String =
-    "( " + count + " )[\n " + values.formatPretty(offset + 4) + "\n" + (" " * offset) + "]"
+  def toJson: JObject =
+    ("type" -> "array") ~
+      ("statistics" -> ("count" -> count)) ~
+      ("values" -> values.toJson)
 }
 
 object ArrayAggregate {
-  def fromList(l: List[Any]): ValueAggregate = ArrayAggregate(MultiAggregate.fromList(l), 1)
+  def fromList(l: List[JValue]): ValueAggregate =
+    ArrayAggregate(MultiAggregate.fromList(l), 1)
 }
 
 case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen: Int, count: Int)
   extends ValueAggregate {
 
   type S = StringAggregate
-
-  override def formatPretty(offset: Int): String =
-    "StringAggregate{ " + values.map("\"" + _ + "\"").mkString(", ") + " }"
 
   def merge(other: StringAggregate): StringAggregate =
     StringAggregate(
@@ -117,11 +120,29 @@ case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen
       ((this.avgLen * this.count) + (other.avgLen * other.count)) / (this.count + other.count),
       this.count + other.count
     )
+
+  def toJson = {
+    ("type" -> "string") ~
+    ("values" -> values.map(StringAggregate.truncate(_, 30))) ~
+      ("statistics" ->
+        ("minLen" -> minLen) ~
+          ("maxLen" -> maxLen) ~
+          ("avgLen" -> avgLen) ~
+          ("count" -> count)
+        )
+  }
 }
 
 object StringAggregate {
   def fromString(s: String): StringAggregate =
     StringAggregate(Set(s), s.length, s.length, s.length, 1)
+
+  def truncate(s: String, n: Int) =
+    if (s.length > n) {
+      s.slice(0, n) + "..."
+    } else {
+      s
+    }
 }
 
 case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int) extends ValueAggregate {
@@ -133,6 +154,13 @@ case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int) extends Val
       this.numFalse + other.numFalse,
       this.count + other.count
     )
+
+  def toJson =
+    ("type" -> "string") ~
+      ("statistics" ->
+        ("numTrue" -> numTrue) ~
+          ("numFalse" -> numFalse) ~
+          ("count" -> count))
 }
 
 object BooleanAggregate {
@@ -146,6 +174,11 @@ case class NullAggregate(count: Int) extends ValueAggregate {
   type S = NullAggregate
 
   def merge(other: NullAggregate): NullAggregate = NullAggregate(this.count + other.count)
+
+  def toJson =
+    ("type" -> "string") ~
+      ("statistics" ->
+        ("count" -> count))
 }
 
 object NullAggregate {
@@ -162,18 +195,6 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
   extends ValueAggregate {
 
   type S = MultiAggregate
-
-  override def formatPretty(offset: Int): String = {
-    val presentTypes = List(jsonAgg, arrayAgg, stringAgg, booleanAgg, nullAgg).filter(_.isDefined)
-
-    val prettyString = presentTypes match {
-      case x :: Nil => x.get.formatPretty(offset)
-      case x :: xs => x.get.formatPretty(offset) + "\n" + xs.map(_.get.formatPretty(offset))
-      case List() => "Empty"
-    }
-
-    (" " * offset) + prettyString
-  }
 
   def merge(other: MultiAggregate): MultiAggregate = {
     MultiAggregate(
@@ -212,10 +233,20 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
       case None => Some(otherVal)
     }
   }
+
+  def toJson = {
+    ("type" -> "multiple_types") ~
+      ("count" -> count) ~
+      ("json" -> jsonAgg.map(_.toJson)) ~
+      ("array" -> arrayAgg.map(_.toJson)) ~
+      ("string" -> stringAgg.map(_.toJson)) ~
+      ("boolean" -> booleanAgg.map(_.toJson)) ~
+      ("null" -> nullAgg.map(_.toJson))
+  }
 }
 
 object MultiAggregate {
-  def fromList(l: List[Any]): MultiAggregate = {
+  def fromList(l: List[JValue]): MultiAggregate = {
     l.foldLeft(MultiAggregate.empty)((mAgg, value) =>
       mAgg.aggregate(ValueAggregate.makeAggregate(value))
     )
@@ -240,6 +271,4 @@ object MultiAggregate {
       0
     )
 }
-
-
 
