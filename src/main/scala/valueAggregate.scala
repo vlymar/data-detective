@@ -122,7 +122,7 @@ case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen
       values = if (!enumLimitReached) this.values.union(other.values) else Set(),
       minLen = this.minLen min other.minLen,
       maxLen = this.maxLen max other.maxLen,
-      avgLen = ((this.avgLen * this.count) + (other.avgLen * other.count)) / (this.count + other.count),
+      avgLen = ((this.avgLen * this.count) + (other.avgLen * other.count)) / (this.count + other.count), // TODO: broken for 0 vals
       overEnumLimit = enumLimitReached,
       numBlank = this.numBlank + other.numBlank,
       count = this.count + other.count
