@@ -39,6 +39,7 @@ object Main {
     val limit = args(2).toInt
 
     val files: List[File] = getListOfFiles(dir).take(limit)
+    println(s"aggregating ${files.size} files")
 
     val analyzed = filesToStrings(files)
       .take(limit)

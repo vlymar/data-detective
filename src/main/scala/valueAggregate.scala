@@ -5,6 +5,7 @@ import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 /*
   TODO:
+  - Add counts to string value occurrences
   - what should MaxEnumSize be?
     - how can I tune it?
   - NumberAggregate not yet implemented
@@ -107,27 +108,36 @@ object ArrayAggregate {
     ArrayAggregate(MultiAggregate.fromList(l), 1)
 }
 
-case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen: Int, count: Int)
+case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen: Int, overEnumLimit: Boolean, numBlank: Int, count: Int)
   extends ValueAggregate {
 
   type S = StringAggregate
 
-  def merge(other: StringAggregate): StringAggregate =
+  val MaxStringSize = 100
+
+  def merge(other: StringAggregate): StringAggregate = {
+   val enumLimitReached = this.overEnumLimit || other.overEnumLimit || (this.values.union(other.values).size > this.MaxEnumSize)
+
     StringAggregate(
-      if (this.values.size + other.values.size < MaxEnumSize) this.values.union(other.values) else Set(),
-      this.minLen min other.minLen,
-      this.maxLen max other.maxLen,
-      ((this.avgLen * this.count) + (other.avgLen * other.count)) / (this.count + other.count),
-      this.count + other.count
+      values = if (!enumLimitReached) this.values.union(other.values) else Set(),
+      minLen = this.minLen min other.minLen,
+      maxLen = this.maxLen max other.maxLen,
+      avgLen = ((this.avgLen * this.count) + (other.avgLen * other.count)) / (this.count + other.count),
+      overEnumLimit = enumLimitReached,
+      numBlank = this.numBlank + other.numBlank,
+      count = this.count + other.count
     )
+  }
 
   def toJson = {
     ("type" -> "string") ~
-    ("values" -> values.map(StringAggregate.truncate(_, 30))) ~
+    ("values" -> values.map(StringAggregate.truncate(_, MaxStringSize))) ~
       ("statistics" ->
         ("minLen" -> minLen) ~
           ("maxLen" -> maxLen) ~
           ("avgLen" -> avgLen) ~
+          ("numBlank" -> numBlank) ~
+          ("overEnumLimit" -> overEnumLimit) ~
           ("count" -> count)
         )
   }
@@ -135,7 +145,15 @@ case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen
 
 object StringAggregate {
   def fromString(s: String): StringAggregate =
-    StringAggregate(Set(s), s.length, s.length, s.length, 1)
+    StringAggregate(
+      values = Set(s),
+      minLen = s.length,
+      maxLen = s.length,
+      avgLen = s.length,
+      overEnumLimit = 25 < 1, // TODO: how do i read the trait val from here?
+      numBlank = if (s.isEmpty) 1 else 0,
+      count = 1
+    )
 
   def truncate(s: String, n: Int) =
     if (s.length > n) {
@@ -156,7 +174,7 @@ case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int) extends Val
     )
 
   def toJson =
-    ("type" -> "string") ~
+    ("type" -> "boolean") ~
       ("statistics" ->
         ("numTrue" -> numTrue) ~
           ("numFalse" -> numFalse) ~
@@ -176,7 +194,7 @@ case class NullAggregate(count: Int) extends ValueAggregate {
   def merge(other: NullAggregate): NullAggregate = NullAggregate(this.count + other.count)
 
   def toJson =
-    ("type" -> "string") ~
+    ("type" -> "null") ~
       ("statistics" ->
         ("count" -> count))
 }
