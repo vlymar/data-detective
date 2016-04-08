@@ -8,7 +8,6 @@ import org.json4s.jackson.JsonMethods._
   - Add counts to string value occurrences
   - what should MaxEnumSize be?
     - how can I tune it?
-  - NumberAggregate not yet implemented
  */
 
 sealed trait ValueAggregate {
@@ -22,6 +21,8 @@ sealed trait ValueAggregate {
     (this, other) match {
       case (a: NullAggregate,       b: NullAggregate)       => a merge b
       case (a: BooleanAggregate,    b: BooleanAggregate)    => a merge b
+      case (a: IntAggregate,        b: IntAggregate)        => a merge b
+      case (a: DoubleAggregate,     b: DoubleAggregate)     => a merge b
       case (a: StringAggregate,     b: StringAggregate)     => a merge b
       case (a: ArrayAggregate,      b: ArrayAggregate)      => a merge b
       case (a: JsonObjectAggregate, b: JsonObjectAggregate) => a merge b
@@ -42,6 +43,8 @@ object ValueAggregate {
     value match {
       case JNull           => NullAggregate.make
       case JBool(b)        => BooleanAggregate.fromBoolean(b)
+      case JInt(i)         => IntAggregate.fromNum(i)
+      case JDouble(d)      => DoubleAggregate.fromNum(d)
       case JString(s)      => StringAggregate.fromString(s)
       case JArray(arr)     => ArrayAggregate.fromList(arr)
       case JObject(fields) => JsonObjectAggregate.fromMap(fields)
@@ -50,6 +53,8 @@ object ValueAggregate {
     }
   }
 }
+
+
 
 case class JsonObjectAggregate(attributes: Map[String, ValueAggregate], count: Int)
   extends ValueAggregate {
@@ -163,6 +168,96 @@ object StringAggregate {
     }
 }
 
+case class IntAggregate(values: Set[BigInt], min: BigInt, max: BigInt, avg: BigInt, overEnumLimit: Boolean, count: Int)
+  extends ValueAggregate {
+
+  type S = IntAggregate
+
+  def merge(other: IntAggregate): IntAggregate = {
+   val enumLimitReached = this.overEnumLimit || other.overEnumLimit || (this.values.union(other.values).size > this.MaxEnumSize)
+
+    IntAggregate(
+      values = if (!enumLimitReached) this.values.union(other.values) else Set(),
+      min= this.min min other.min,
+      max = this.max max other.max,
+      avg = ((this.avg * this.count) + (other.avg* other.count)) / (this.count + other.count), // TODO: broken for 0 vals
+      overEnumLimit = enumLimitReached,
+      count = this.count + other.count
+    )
+  }
+
+  def toJson = {
+    ("type" -> "int") ~
+    ("values" -> values) ~
+      ("statistics" ->
+        ("min" -> min) ~
+          ("max" -> max) ~
+          ("avg" -> avg) ~
+          ("overEnumLimit" -> overEnumLimit) ~
+          ("count" -> count)
+        )
+  }
+}
+
+object IntAggregate {
+  // TODO: needs to be instantiatable from any number. anyval?
+  def fromNum(n: BigInt): IntAggregate =
+    IntAggregate(
+      values = Set(n),
+      min = n,
+      max = n,
+      avg = n,
+      overEnumLimit = 25 < 1, // TODO: how do i read the trait val from here?
+      count = 1
+    )
+}
+
+// TODO: what is an appropriate set type? it has to represent all numerics
+case class DoubleAggregate(values: Set[Double], min: Double, max: Double, avg: Double, overEnumLimit: Boolean, count: Int)
+  extends ValueAggregate {
+
+  type S = DoubleAggregate
+
+  def merge(other: DoubleAggregate): DoubleAggregate = {
+   val enumLimitReached = this.overEnumLimit || other.overEnumLimit || (this.values.union(other.values).size > this.MaxEnumSize)
+
+    DoubleAggregate(
+      values = if (!enumLimitReached) this.values.union(other.values) else Set(),
+      min= this.min min other.min,
+      max = this.max max other.max,
+      avg = ((this.avg * this.count) + (other.avg* other.count)) / (this.count + other.count), // TODO: broken for 0 vals
+      overEnumLimit = enumLimitReached,
+      count = this.count + other.count
+    )
+  }
+
+  def toJson = {
+    ("type" -> "double") ~
+    ("values" -> values) ~
+      ("statistics" ->
+        ("min" -> min) ~
+          ("max" -> max) ~
+          ("avg" -> avg) ~
+          ("overEnumLimit" -> overEnumLimit) ~
+          ("count" -> count)
+        )
+  }
+}
+
+object DoubleAggregate {
+  // TODO: needs to be instantiatable from any number. anyval?
+  def fromNum(n: Double): DoubleAggregate =
+    DoubleAggregate(
+      values = Set(n),
+      min = n,
+      max = n,
+      avg = n,
+      overEnumLimit = 25 < 1, // TODO: how do i read the trait val from here?
+      count = 1
+    )
+}
+
+
 case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int) extends ValueAggregate {
   type S = BooleanAggregate
 
@@ -206,6 +301,8 @@ object NullAggregate {
 case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
                           arrayAgg: Option[ArrayAggregate],
                           stringAgg: Option[StringAggregate],
+                          intAgg: Option[IntAggregate],
+                          doubleAgg: Option[DoubleAggregate],
                           booleanAgg: Option[BooleanAggregate],
                           nullAgg: Option[NullAggregate],
                           count: Int
@@ -219,6 +316,8 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
       callOrReplaceWithEither(this.jsonAgg, other.jsonAgg)(_ merge _),
       callOrReplaceWithEither(this.arrayAgg, other.arrayAgg)(_ merge _),
       callOrReplaceWithEither(this.stringAgg, other.stringAgg)(_ merge _),
+      callOrReplaceWithEither(this.intAgg, other.intAgg)(_ merge _),
+      callOrReplaceWithEither(this.doubleAgg, other.doubleAgg)(_ merge _),
       callOrReplaceWithEither(this.booleanAgg, other.booleanAgg)(_ merge _),
       callOrReplaceWithEither(this.nullAgg, other.nullAgg)(_ merge _),
       this.count + other.count
@@ -229,6 +328,8 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
     other match {
       case a: ArrayAggregate =>      this.copy(arrayAgg   = callOrReplace(this.arrayAgg, a)(_ merge _), count = count + 1)
       case s: StringAggregate =>     this.copy(stringAgg  = callOrReplace(this.stringAgg, s)(_ merge _), count = count + 1)
+      case s: IntAggregate =>        this.copy(intAgg     = callOrReplace(this.intAgg, s)(_ merge _), count = count + 1)
+      case s: DoubleAggregate =>     this.copy(doubleAgg  = callOrReplace(this.doubleAgg, s)(_ merge _), count = count + 1)
       case j: JsonObjectAggregate => this.copy(jsonAgg    = callOrReplace(this.jsonAgg, j)(_ merge _), count = count + 1)
       case b: BooleanAggregate =>    this.copy(booleanAgg = callOrReplace(this.booleanAgg, b)(_ merge _), count = count + 1)
       case n: NullAggregate =>       this.copy(nullAgg    = callOrReplace(this.nullAgg, n)(_ merge _), count = count + 1)
@@ -258,6 +359,8 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
       ("json" -> jsonAgg.map(_.toJson)) ~
       ("array" -> arrayAgg.map(_.toJson)) ~
       ("string" -> stringAgg.map(_.toJson)) ~
+      ("int" -> intAgg.map(_.toJson)) ~
+      ("double" -> doubleAgg.map(_.toJson)) ~
       ("boolean" -> booleanAgg.map(_.toJson)) ~
       ("null" -> nullAgg.map(_.toJson))
   }
@@ -281,6 +384,8 @@ object MultiAggregate {
 
   def empty: MultiAggregate =
     MultiAggregate(
+      None,
+      None,
       None,
       None,
       None,
