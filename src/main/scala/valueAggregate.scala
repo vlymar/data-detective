@@ -5,7 +5,7 @@ import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 /*
   TODO:
-  - Add counts to string value occurrences
+  - Add counts to string enum value frequencies
   - what should MaxEnumSize be?
     - how can I tune it?
   - can i use Numeric to somehow combine IntAggregate and DoubleAggregate?
@@ -407,6 +407,8 @@ object MultiAggregate {
   }
 
   def fromAggregateList(l: List[ValueAggregate]): MultiAggregate = {
+    // BUG pretty sure counts are off: but, what do counts even mean for this?
+    //     scenario: folding 50 strings to an empty multiaggregate- count becomes 1
     l.foldLeft(MultiAggregate.empty)((mAgg, valueAggregate) =>
       valueAggregate match {
         case m: MultiAggregate => mAgg merge m
