@@ -16,7 +16,7 @@ object Main {
 
   // TODO: should i limit these to just root json objects, aka jsonagg and array agg?
   def analyzeJson(json: JValue): ValueAggregate =
-    ValueAggregate.makeAggregate(json)
+    ValueAggregate.fromJValue(json)
 
   def filesToStrings(files: List[File]): Stream[String] = {
     files match {

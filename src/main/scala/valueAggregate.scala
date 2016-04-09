@@ -8,6 +8,7 @@ import org.json4s.jackson.JsonMethods._
   - Add counts to string value occurrences
   - what should MaxEnumSize be?
     - how can I tune it?
+  - can i use Numeric to somehow combine IntAggregate and DoubleAggregate?
  */
 
 sealed trait ValueAggregate {
@@ -17,29 +18,17 @@ sealed trait ValueAggregate {
 
   val count: Int
 
-  def aggregate[T <: ValueAggregate](other: T): ValueAggregate = {
-    (this, other) match {
-      case (a: NullAggregate,       b: NullAggregate)       => a merge b
-      case (a: BooleanAggregate,    b: BooleanAggregate)    => a merge b
-      case (a: IntAggregate,        b: IntAggregate)        => a merge b
-      case (a: DoubleAggregate,     b: DoubleAggregate)     => a merge b
-      case (a: StringAggregate,     b: StringAggregate)     => a merge b
-      case (a: ArrayAggregate,      b: ArrayAggregate)      => a merge b
-      case (a: JsonObjectAggregate, b: JsonObjectAggregate) => a merge b
-      case (a: MultiAggregate,      b: MultiAggregate)      => a merge b
-      case (a, b) => MultiAggregate.fromAggregateList(List(this, other))
+  // TODO: how do i implement this generically?
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate
 
-      case _ => throw new Error("multi aggregate time")
-    }
-  }
-
+  // TODO: how do I limit S to only be the same as this class
   def merge(other: S): S
 
   def toJson: JObject
 }
 
 object ValueAggregate {
-  def makeAggregate(value: JValue): ValueAggregate = {
+  def fromJValue(value: JValue): ValueAggregate = {
     value match {
       case JNull           => NullAggregate.make
       case JBool(b)        => BooleanAggregate.fromBoolean(b)
@@ -47,19 +36,23 @@ object ValueAggregate {
       case JDouble(d)      => DoubleAggregate.fromNum(d)
       case JString(s)      => StringAggregate.fromString(s)
       case JArray(arr)     => ArrayAggregate.fromList(arr)
-      case JObject(fields) => JsonObjectAggregate.fromMap(fields)
+      case JObject(fields) => JsonObjectAggregate.fromFields(fields)
 
-      case x          => throw new Error(x.getClass.toString)
+      case x => throw new Error(x.getClass.toString)
     }
   }
 }
-
-
 
 case class JsonObjectAggregate(attributes: Map[String, ValueAggregate], count: Int)
   extends ValueAggregate {
 
   type S = JsonObjectAggregate
+
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate =
+    (this, other) match {
+      case (a, b: JsonObjectAggregate) => a merge b
+      case _ => MultiAggregate.combine(this, other)
+    }
 
   def merge(other: JsonObjectAggregate): JsonObjectAggregate = {
     val mergedAttrs = (this.attributes.keySet ++ other.attributes.keySet).map((k) =>
@@ -84,10 +77,9 @@ case class JsonObjectAggregate(attributes: Map[String, ValueAggregate], count: I
 }
 
 object JsonObjectAggregate {
-  // TODO: change name
-  def fromMap(jsonMap: List[(String, JValue)]): JsonObjectAggregate = {
+  def fromFields(jsonMap: List[(String, JValue)]): JsonObjectAggregate = {
     val m = jsonMap.map {
-      case (k, v) => k -> ValueAggregate.makeAggregate(v)
+      case (k, v) => k -> ValueAggregate.fromJValue(v)
     }.toMap
 
     JsonObjectAggregate(m, 1)
@@ -98,6 +90,12 @@ case class ArrayAggregate(values: MultiAggregate, count: Int)
   extends ValueAggregate {
 
   type S = ArrayAggregate
+
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate =
+    (this, other) match {
+      case (a, b: ArrayAggregate) => a merge b
+      case _=> MultiAggregate.combine(this, other)
+    }
 
   def merge(other: ArrayAggregate): ArrayAggregate =
     ArrayAggregate(this.values.merge(other.values), this.count + other.count)
@@ -119,6 +117,12 @@ case class StringAggregate(values: Set[String], minLen: Int, maxLen: Int, avgLen
   type S = StringAggregate
 
   val MaxStringSize = 100
+
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate =
+    (this, other) match {
+      case (a, b: StringAggregate) => a merge b
+      case _=> MultiAggregate.combine(this, other)
+    }
 
   def merge(other: StringAggregate): StringAggregate = {
    val enumLimitReached = this.overEnumLimit || other.overEnumLimit || (this.values.union(other.values).size > this.MaxEnumSize)
@@ -173,6 +177,12 @@ case class IntAggregate(values: Set[BigInt], min: BigInt, max: BigInt, avg: BigI
 
   type S = IntAggregate
 
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate =
+    (this, other) match {
+      case (a, b: IntAggregate) => a merge b
+      case _=> MultiAggregate.combine(this, other)
+    }
+
   def merge(other: IntAggregate): IntAggregate = {
    val enumLimitReached = this.overEnumLimit || other.overEnumLimit || (this.values.union(other.values).size > this.MaxEnumSize)
 
@@ -218,6 +228,12 @@ case class DoubleAggregate(values: Set[Double], min: Double, max: Double, avg: D
 
   type S = DoubleAggregate
 
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate =
+    (this, other) match {
+      case (a, b: DoubleAggregate) => a merge b
+      case _=> MultiAggregate.combine(this, other)
+    }
+
   def merge(other: DoubleAggregate): DoubleAggregate = {
    val enumLimitReached = this.overEnumLimit || other.overEnumLimit || (this.values.union(other.values).size > this.MaxEnumSize)
 
@@ -245,7 +261,6 @@ case class DoubleAggregate(values: Set[Double], min: Double, max: Double, avg: D
 }
 
 object DoubleAggregate {
-  // TODO: needs to be instantiatable from any number. anyval?
   def fromNum(n: Double): DoubleAggregate =
     DoubleAggregate(
       values = Set(n),
@@ -258,8 +273,15 @@ object DoubleAggregate {
 }
 
 
-case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int) extends ValueAggregate {
+case class BooleanAggregate(numTrue: Int, numFalse: Int, count: Int)
+  extends ValueAggregate {
   type S = BooleanAggregate
+
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate =
+    (this, other) match {
+      case (a, b: BooleanAggregate) => a merge b
+      case _=> MultiAggregate.combine(this, other)
+    }
 
   def merge(other: BooleanAggregate): BooleanAggregate =
     BooleanAggregate(
@@ -285,6 +307,12 @@ object BooleanAggregate {
 
 case class NullAggregate(count: Int) extends ValueAggregate {
   type S = NullAggregate
+
+  def aggregate[T <: ValueAggregate](other: T): ValueAggregate =
+    (this, other) match {
+      case (a, b: NullAggregate) => a merge b
+      case _=> MultiAggregate.combine(this, other)
+    }
 
   def merge(other: NullAggregate): NullAggregate = NullAggregate(this.count + other.count)
 
@@ -312,6 +340,7 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
   type S = MultiAggregate
 
   def merge(other: MultiAggregate): MultiAggregate = {
+    // TODO: is there some way to streamline this? can i map over fields?
     MultiAggregate(
       callOrReplaceWithEither(this.jsonAgg, other.jsonAgg)(_ merge _),
       callOrReplaceWithEither(this.arrayAgg, other.arrayAgg)(_ merge _),
@@ -324,8 +353,10 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
     )
   }
 
-  override def aggregate[T <: ValueAggregate](other: T): MultiAggregate = {
+  def aggregate[T <: ValueAggregate](other: T): MultiAggregate = {
+    // TODO: this is hellish...
     other match {
+      case m: MultiAggregate =>      this merge m
       case a: ArrayAggregate =>      this.copy(arrayAgg   = callOrReplace(this.arrayAgg, a)(_ merge _), count = count + 1)
       case s: StringAggregate =>     this.copy(stringAgg  = callOrReplace(this.stringAgg, s)(_ merge _), count = count + 1)
       case s: IntAggregate =>        this.copy(intAgg     = callOrReplace(this.intAgg, s)(_ merge _), count = count + 1)
@@ -333,7 +364,6 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
       case j: JsonObjectAggregate => this.copy(jsonAgg    = callOrReplace(this.jsonAgg, j)(_ merge _), count = count + 1)
       case b: BooleanAggregate =>    this.copy(booleanAgg = callOrReplace(this.booleanAgg, b)(_ merge _), count = count + 1)
       case n: NullAggregate =>       this.copy(nullAgg    = callOrReplace(this.nullAgg, n)(_ merge _), count = count + 1)
-      case m: MultiAggregate =>      this merge m
     }
   }
 
@@ -367,9 +397,12 @@ case class MultiAggregate(jsonAgg: Option[JsonObjectAggregate],
 }
 
 object MultiAggregate {
+  def combine[A <: ValueAggregate, B <: ValueAggregate](first: A, second: B): MultiAggregate =
+    fromAggregateList(List(first, second))
+
   def fromList(l: List[JValue]): MultiAggregate = {
     l.foldLeft(MultiAggregate.empty)((mAgg, value) =>
-      mAgg.aggregate(ValueAggregate.makeAggregate(value))
+      mAgg.aggregate(ValueAggregate.fromJValue(value))
     )
   }
 
